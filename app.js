@@ -10,8 +10,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const MAP_HEIGHT = 600; // For now, same as canvas
 
     // UI Elements
+    const minimapCanvas = document.getElementById('minimap-canvas');
+    const minimapCtx = minimapCanvas.getContext('2d');
+    // Set minimap canvas dimensions (can also be done in HTML or CSS)
+    minimapCanvas.width = 150; // As per style.css
+    minimapCanvas.height = 100; // As per style.css
+
+    const MINIMAP_SCALE_X = minimapCanvas.width / MAP_WIDTH;
+    const MINIMAP_SCALE_Y = minimapCanvas.height / MAP_HEIGHT;
+
     const mineralsDisplay = document.getElementById('minerals');
     const gasDisplay = document.getElementById('gas');
+    const statusMessageDisplay = document.getElementById('status-message');
     let gameState = 'normal'; // For handling specific input states like awaiting_gather_target
     let buildingToPlace = null;
     let currentMousePosition = { x: 0, y: 0 };
@@ -19,22 +29,24 @@ document.addEventListener('DOMContentLoaded', () => {
     const entityHPDisplay = document.getElementById('entity-hp');
     const commandPanel = document.getElementById('command-panel');
     const unitQueueList = document.getElementById('unit-queue-list');
-    // Minimap canvas (for later)
-    // const minimapCanvas = document.getElementById('minimap-canvas');
-    // const minimapCtx = minimapCanvas.getContext('2d');
+    const currentSupplyDisplay = document.getElementById('current-supply');
+    const maxSupplyDisplay = document.getElementById('max-supply');
 
     // Game state variables
     let playerResources = {
-        minerals: 50, // Start with less, CC will generate
-        gas: 0
+        minerals: 50,
+        gas: 0,
+        currentSupply: 0,
+        maxSupply: 0 // Will be updated by buildings
     };
     let gameObjects = []; // To store all units, buildings, resources
     let selectedObject = null;
 
     class Building {
-        constructor(x, y, emoji, type, hp, size = 50) {
+        constructor(x, y, emoji, type, hp, size = 50, isAI = false) {
             this.x = x;
             this.y = y;
+            this.isAI = isAI; // Added isAI property
             this.emoji = emoji;
             this.type = type;
             this.hp = hp;
@@ -52,6 +64,7 @@ document.addEventListener('DOMContentLoaded', () => {
             this.isConstructing = false;
             this.buildProgress = 0;
             this.totalBuildTime = 5000; // Default, can be overridden by specific building types
+            this.supplyProvided = 0; // New property
         }
 
         render(ctx) {
@@ -110,6 +123,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     this.hp = this.maxHp; // Restore to full HP after construction
                     this.buildProgress = this.totalBuildTime; // Cap progress
                     console.log(`${this.type} at (${this.x}, ${this.y}) construction complete.`);
+                    // If this building provides supply, update the max supply
+                    if (this.supplyProvided > 0) { 
+                        updateMaxSupply();
+                    }
                 }
             }
 
@@ -119,8 +136,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     this.lastResourceTick += deltaTime; // deltaTime is in seconds
                     if (this.lastResourceTick >= 1) { // Every 1 second
                         const ticks = Math.floor(this.lastResourceTick);
-                        playerResources.minerals += this.resourceGenerationRate * ticks;
-                        this.lastResourceTick -= ticks;
+                        if (this.isAI) {
+                            aiPlayerResources.minerals += this.resourceGenerationRate * ticks;
+                        } else {
+                            playerResources.minerals += this.resourceGenerationRate * ticks;
+                        }
+                        // console.log(`${this.isAI ? "AI" : "Player"} CommandCenter generated ${this.resourceGenerationRate * ticks} minerals.`);
+                        this.lastResourceTick -= ticks; // Correctly subtract processed ticks
                     }
                 }
                 // Process production queue
@@ -140,19 +162,24 @@ document.addEventListener('DOMContentLoaded', () => {
                         let newUnit;
                         const unitType = this.currentProduction.type;
 
+                        // Player's units are created with isAI = false
                         if (unitType === 'Collector') {
-                            newUnit = new Collector(spawnX, spawnY);
+                            newUnit = new Collector(spawnX, spawnY, false);
                         } else if (unitType === 'Soldier') {
-                            newUnit = new Soldier(spawnX, spawnY);
+                            newUnit = new Soldier(spawnX, spawnY, false);
                         } else if (unitType === 'SuperSoldier') {
-                            newUnit = new SuperSoldier(spawnX, spawnY);
+                            newUnit = new SuperSoldier(spawnX, spawnY, false);
                         } else if (unitType === 'Tank') {
-                            newUnit = new Tank(spawnX, spawnY);
+                            newUnit = new Tank(spawnX, spawnY, false);
                         }
 
                         if (newUnit) {
                             gameObjects.push(newUnit);
-                            console.log(`${unitType} built!`);
+                            if (newUnit.supplyCost > 0) { // Check if the unit actually costs supply
+                                playerResources.currentSupply += newUnit.supplyCost;
+                            }
+                            console.log(`${unitType} built! Current supply: ${playerResources.currentSupply}/${playerResources.maxSupply}`);
+                            // updateBuildQueueDisplay(); // Already called by main loop or selection change
                         }
                         this.currentProduction = null;
                     } else if (!buildTime) {
@@ -192,9 +219,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     class Unit {
-        constructor(x, y, emoji, type, hp, speed, size = 20) {
+        constructor(x, y, emoji, type, hp, speed, size = 20, isAI = false) {
             this.x = x;
             this.y = y;
+            this.isAI = isAI; // Added isAI property
             this.emoji = emoji;
             this.type = type;
             this.hp = hp;
@@ -206,6 +234,7 @@ document.addEventListener('DOMContentLoaded', () => {
             this.target = null; // {x, y} for movement
             this.action = 'idle'; // e.g., 'moving', 'gathering', 'returning'
             this.selected = false; // For visual feedback or group selection later
+            this.supplyCost = 1; // New property, can be overridden by specific units
         }
 
         render(ctx) {
@@ -251,16 +280,29 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             // Other actions like gathering will be handled in derived classes
         }
+
+        stop() {
+            this.action = 'idle';
+            this.target = null;
+            this.attackTarget = null;
+            // For collectors, might need to interrupt specific gathering sub-actions
+            if (this.type === 'Collector') {
+                this.targetResourceNode = null; 
+                // currentLoad remains, they just stop what they were doing
+            }
+            console.log(`${this.type} (${this.emoji}) received STOP command.`);
+        }
     }
 
     class Collector extends Unit {
-        constructor(x, y) {
-            super(x, y, '👷', 'Collector', 50, 60, 22); // x, y, emoji, type, hp, speed, size
+        constructor(x, y, isAI = false) { // Added isAI parameter
+            super(x, y, '👷', 'Collector', 50, 60, 22, isAI); // Pass isAI to super
             this.resourceType = null; // 'minerals' or 'gas'
             this.carryCapacity = 10;
             this.currentLoad = 0;
             this.targetResourceNode = null;
             this.homeBuilding = null; // To return resources
+            this.supplyCost = 1; // Explicitly set supply cost
         }
 
         findClosestBuilding(buildingType) {
@@ -340,13 +382,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // After the Collector class definition
 
     class Soldier extends Unit {
-        constructor(x, y) {
-            super(x, y, '💂', 'Soldier', 100, 50, 24); // x, y, emoji, type, hp, speed, size
+        constructor(x, y, isAI = false) { // Added isAI parameter
+            super(x, y, '💂', 'Soldier', 100, 50, 24, isAI); // Pass isAI to super
             this.attackDamage = 10;
             this.attackRange = 80; // pixels
             this.attackSpeed = 1000; // ms per attack (1 attack per second)
             this.lastAttackTime = 0;
             this.attackTarget = null;
+            this.supplyCost = 1; // Explicitly set supply cost
         }
 
         canAttack(target) {
@@ -400,13 +443,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     class SuperSoldier extends Unit {
-        constructor(x, y) {
-            super(x, y, '🦸', 'SuperSoldier', 150, 55, 28);
+        constructor(x, y, isAI = false) { // Added isAI parameter
+            super(x, y, '🦸', 'SuperSoldier', 150, 55, 28, isAI); // Pass isAI to super
             this.attackDamage = 20;
             this.attackRange = 100;
             this.attackSpeed = 1200;
             this.lastAttackTime = 0;
             this.attackTarget = null;
+            this.supplyCost = 2; // Explicitly set supply cost
         }
         // Identical canAttack, attack, and update methods as Soldier for now.
         // Could be refactored into Unit class or a CombatUnit subclass later.
@@ -422,13 +466,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
     class Tank extends Unit {
-        constructor(x, y) {
-            super(x, y, '🚜', 'Tank', 250, 35, 32);
+        constructor(x, y, isAI = false) { // Added isAI parameter
+            super(x, y, '🚜', 'Tank', 250, 35, 32, isAI); // Pass isAI to super
             this.attackDamage = 35;
             this.attackRange = 150;
             this.attackSpeed = 2000;
             this.lastAttackTime = 0;
             this.attackTarget = null;
+            this.supplyCost = 3; // Explicitly set supply cost
         }
         // Identical canAttack, attack, and update methods as Soldier for now.
         // canAttack(target) { /* ... copy from Soldier ... */ }
@@ -439,6 +484,29 @@ document.addEventListener('DOMContentLoaded', () => {
     Tank.prototype.canAttack = Soldier.prototype.canAttack;
     Tank.prototype.attack = Soldier.prototype.attack;
     Tank.prototype.update = Soldier.prototype.update;
+
+    function updateMaxSupply() {
+        let newMaxSupply = 0;
+        for (const obj of gameObjects) {
+            if (obj.isBuilding && obj.isPlaced && !obj.isConstructing && obj.supplyProvided > 0) {
+                newMaxSupply += obj.supplyProvided;
+            }
+        }
+        playerResources.maxSupply = newMaxSupply;
+        // console.log("Max supply updated to: " + playerResources.maxSupply); // For debugging
+    }
+
+    function setGameStatusMessage(message, duration = 0) {
+        if (!statusMessageDisplay) return; // Guard if element not found
+        statusMessageDisplay.textContent = message;
+        if (duration > 0) {
+            setTimeout(() => {
+                if (statusMessageDisplay.textContent === message) {
+                    statusMessageDisplay.textContent = ''; 
+                }
+            }, duration);
+        }
+    }
 
     class ResourceNode {
         constructor(x, y, emoji, resourceType, amount, size = 30) {
@@ -478,6 +546,56 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function renderMinimap() {
+        // Clear minimap
+        minimapCtx.clearRect(0, 0, minimapCanvas.width, minimapCanvas.height);
+
+        // Draw minimap background (optional, if different from game canvas bg)
+        minimapCtx.fillStyle = '#222'; // Dark background for minimap
+        minimapCtx.fillRect(0, 0, minimapCanvas.width, minimapCanvas.height);
+
+        // Draw border for the entire map
+        minimapCtx.strokeStyle = '#555';
+        minimapCtx.lineWidth = 1;
+        minimapCtx.strokeRect(0, 0, minimapCanvas.width, minimapCanvas.height);
+
+        // Draw game objects
+        gameObjects.forEach(obj => {
+            if (obj.isDestroyed) return; // Don't draw destroyed objects
+
+            const minimapX = obj.x * MINIMAP_SCALE_X;
+            const minimapY = obj.y * MINIMAP_SCALE_Y;
+            let minimapColor = 'gray'; // Default
+            let minimapSize = 2;
+
+            if (obj.type === 'CommandCenter' || obj.type === 'Barracks') {
+                minimapColor = obj.isAI ? 'orange' : 'blue'; // AI buildings orange, player blue
+                minimapSize = obj.isConstructing ? 3 : 4; // Slightly larger, indicate if constructing
+            } else if (obj.isUnit) {
+                if (obj.type === 'Collector') {
+                    minimapColor = obj.isAI ? 'yellow' : 'aqua'; // AI collectors yellow
+                } else { // Combat units
+                    minimapColor = obj.isAI ? 'pink' : 'red'; // AI combat units pink
+                }
+                minimapSize = 2;
+            } else if (obj.type === 'ResourceNode') {
+                if (obj.resourceType === 'minerals') {
+                    minimapColor = 'cyan';
+                } else if (obj.resourceType === 'gas') {
+                    minimapColor = 'lightgreen';
+                }
+                minimapSize = 1;
+            }
+
+            minimapCtx.fillStyle = minimapColor;
+            minimapCtx.fillRect(minimapX - minimapSize / 2, minimapY - minimapSize / 2, minimapSize, minimapSize);
+        });
+
+        // Optional: Draw current viewport on minimap (assuming no scrolling for now, viewport is full map)
+        // If scrolling is implemented, gameCanvas.viewportX, gameCanvas.viewportY would be needed.
+        // For now, the viewport is the entire map, so no special rectangle needed unless we zoom.
+    }
+
     let lastTime = 0;
     // --- Game Loop ---
     function gameLoop(timestamp) {
@@ -494,6 +612,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // Update game logic here
         mineralsDisplay.textContent = playerResources.minerals;
         gasDisplay.textContent = playerResources.gas;
+        if (currentSupplyDisplay && maxSupplyDisplay) {
+            currentSupplyDisplay.textContent = playerResources.currentSupply;
+            maxSupplyDisplay.textContent = playerResources.maxSupply;
+        }
 
         gameObjects.forEach(obj => {
             if (obj.update) {
@@ -526,14 +648,40 @@ document.addEventListener('DOMContentLoaded', () => {
         updateBuildQueueDisplay(); // Call this each frame
 
         // Handle Object Destruction and Removal
-        const initialObjectCount = gameObjects.length;
-        gameObjects = gameObjects.filter(obj => !obj.isDestroyed);
-        if (gameObjects.length < initialObjectCount) {
-            console.log(`${initialObjectCount - gameObjects.length} objects removed.`);
-            if (selectedObject && selectedObject.isDestroyed) { // Clear selection if it was destroyed
-                selectedObject = null;
-                updateCommandPanel(); // Update panel if selection is cleared
+        // const initialObjectCount = gameObjects.length; // Not strictly needed with new logic
+        let supplyBuildingDestroyed = false; 
+        let selectedObjectWasDestroyed = false;
+
+        gameObjects = gameObjects.filter(obj => {
+            if (obj.isDestroyed) {
+                if (obj.isBuilding && obj.supplyProvided > 0) {
+                    supplyBuildingDestroyed = true;
+                }
+                // If the destroyed object was selected, clear the selection
+                if (obj === selectedObject) {
+                    selectedObject = null;
+                    selectedObjectWasDestroyed = true; // Flag that selection was cleared
+                }
+                // When a unit is destroyed, free up its supply
+                if (obj.isUnit && obj.supplyCost > 0) {
+                    playerResources.currentSupply -= obj.supplyCost;
+                    // Ensure currentSupply doesn't go below zero, though it shouldn't
+                    playerResources.currentSupply = Math.max(0, playerResources.currentSupply); 
+                    console.log(`${obj.type} destroyed. Supply freed. Current supply: ${playerResources.currentSupply}/${playerResources.maxSupply}`);
+                } else if (obj.isBuilding) { // Log building destruction
+                    console.log(`${obj.type} destroyed.`);
+                }
+                return false; // Remove from gameObjects
             }
+            return true; // Keep in gameObjects
+        });
+
+        if (supplyBuildingDestroyed) {
+            updateMaxSupply(); // Recalculate max supply if a supply building was destroyed
+        }
+        if (selectedObjectWasDestroyed) { // If selected object was destroyed and nulled
+            updateCommandPanel(); // Refresh command panel
+            updateBuildQueueDisplay(); // Refresh build queue
         }
     }
 
@@ -578,6 +726,7 @@ document.addEventListener('DOMContentLoaded', () => {
             ctx.fillText(buildingToPlace.emoji, currentMousePosition.x, currentMousePosition.y);
             ctx.globalAlpha = 1.0;
         }
+        renderMinimap(); // Call the new minimap rendering function
     }
 
     // --- Input Handling ---
@@ -595,7 +744,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
         let newSelection = null; // Potential new selection based on click
 
-        if (gameState === 'placing_building' && buildingToPlace) {
+        if (gameState === 'awaiting_attack_target' && selectedObject && selectedObject.attack) {
+            let clickedOnTarget = null;
+            for (const obj of gameObjects) {
+                // Check if the clicked object is a valid target (has HP, not self, not allied if that logic existed)
+                if (obj !== selectedObject && obj.hp !== undefined && obj.hp > 0 /* && !obj.isDestroyed */) {
+                    const objSize = obj.size || 24;
+                    if (
+                        clickX >= obj.x - objSize / 2 && clickX <= obj.x + objSize / 2 &&
+                        clickY >= obj.y - objSize / 2 && clickY <= obj.y + objSize / 2
+                    ) {
+                        clickedOnTarget = obj;
+                        break;
+                    }
+                }
+            }
+
+            if (clickedOnTarget) {
+                selectedObject.attackTarget = clickedOnTarget;
+                selectedObject.action = 'moving_to_attack';
+                setGameStatusMessage(`${selectedObject.emoji} attacking ${clickedOnTarget.emoji}.`, 3000);
+            } else {
+                setGameStatusMessage('Attack command cancelled: Invalid target.', 3000);
+            }
+            gameState = 'normal'; // Reset state
+            // updateCommandPanel(); // Called at the end of the click handler
+
+        } else if (gameState === 'placing_building' && buildingToPlace) {
             if (playerResources.minerals >= buildingToPlace.cost) {
                 playerResources.minerals -= buildingToPlace.cost;
                 const newBuilding = new Building(
@@ -643,9 +818,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (clickedOnNode) {
                 selectedObject.gatherFrom(clickedOnNode);
+                setGameStatusMessage(`${selectedObject.emoji} ordered to gather from ${clickedOnNode.emoji}.`, 3000);
             } else {
-                // Clicked on empty ground, interpret as move command
-                selectedObject.moveTo(clickX, clickY);
+                // Clicked on empty ground or invalid target
+                setGameStatusMessage('Gather command cancelled: Invalid target.', 3000);
             }
             gameState = 'normal'; // Reset state
         } else { // Normal selection/command logic
@@ -700,20 +876,50 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- UI Updates ---
     function updateCommandPanel() {
         commandPanel.innerHTML = ''; // Clear old commands
+
+        // Clear placement mode if it's active and a new command is issued by selecting an existing object
+        if (gameState === 'placing_building' && selectedObject) { 
+            setGameStatusMessage('Building placement cancelled.', 2000);
+            gameState = 'normal';
+            buildingToPlace = null;
+        }
+
         if (selectedObject) {
             // Example: Add a "Move" button if a unit is selected
             if (selectedObject.isUnit) {
-                const moveButton = document.createElement('button');
-                moveButton.textContent = 'Move (M)';
-                moveButton.onclick = () => alert('Move command issued for ' + selectedObject.emoji + '. Click on map to set destination.');
-                // Actual move command is now issued by clicking on the map after selection
-                commandPanel.appendChild(moveButton);
+                const stopButton = document.createElement('button');
+                stopButton.textContent = 'Stop (S)';
+                stopButton.onclick = () => {
+                    if (selectedObject && selectedObject.stop) {
+                        selectedObject.stop();
+                        setGameStatusMessage(`${selectedObject.emoji} stopped.`, 2000);
+                        if (gameState === 'awaiting_gather_target' || gameState === 'awaiting_attack_target') {
+                            gameState = 'normal'; // Also cancel targeting mode
+                        }
+                    }
+                };
+                commandPanel.appendChild(stopButton);
+
+                // The old "Move (M)" button was here. It has been removed as per instructions.
+                // Movement is now handled by selecting a unit and clicking on the ground.
+
+                if (selectedObject.attack) { // Check if unit has attack capability
+                    const attackButton = document.createElement('button');
+                    attackButton.textContent = 'Attack (A)';
+                    attackButton.onclick = () => {
+                        // alert('Select a target to attack.'); // REMOVE THIS
+                        setGameStatusMessage('Awaiting attack target: Click an enemy unit or building.', 5000);
+                        gameState = 'awaiting_attack_target'; 
+                    };
+                    commandPanel.appendChild(attackButton);
+                }
 
                 if (selectedObject.type === 'Collector') {
                     const gatherButton = document.createElement('button');
                     gatherButton.textContent = 'Gather (G)';
                     gatherButton.onclick = () => {
-                        alert('Select a resource node to gather from.');
+                        // alert('Select a resource node to gather from.'); // REMOVE THIS
+                        setGameStatusMessage('Awaiting resource target: Click a mineral or gas node.', 5000);
                         // Set a game state to expect a resource node click
                         gameState = 'awaiting_gather_target'; 
                     };
@@ -724,13 +930,27 @@ document.addEventListener('DOMContentLoaded', () => {
                 const buildCollectorButton = document.createElement('button');
                 buildCollectorButton.textContent = 'Build Collector (C) - 50M'; // M for Minerals
                 buildCollectorButton.onclick = () => {
-                    if (playerResources.minerals >= 50) {
-                        playerResources.minerals -= 50; // Deduct cost
-                        selectedObject.productionQueue.push('Collector'); // Add to building's queue
-                        console.log('Queuing collector...');
-                        updateBuildQueueDisplay(); // Explicitly update here for immediate feedback
+                    const collectorCost = 50; 
+                    const collectorSupplyCost = 1; // Defined for Collector
+
+                    // Check supply first
+                    if (playerResources.currentSupply + collectorSupplyCost <= playerResources.maxSupply) {
+                        // Then check resources
+                        if (playerResources.minerals >= collectorCost) {
+                            if (selectedObject.productionQueue.length < 5) { 
+                                playerResources.minerals -= collectorCost;
+                                selectedObject.productionQueue.push('Collector');
+                                setGameStatusMessage('Collector queued for production.', 3000);
+                                updateBuildQueueDisplay(); 
+                            } else {
+                                setGameStatusMessage('Production queue is full!', 3000);
+                            }
+                        } else {
+                            setGameStatusMessage(`Not enough minerals for Collector! Need ${collectorCost}.`, 3000);
+                        }
                     } else {
-                        alert('Not enough minerals!');
+                        // Not enough supply
+                        setGameStatusMessage(`Not enough supply for Collector! Need ${collectorSupplyCost} supply. Max: ${playerResources.maxSupply}.`, 4000);
                     }
                 };
                 commandPanel.appendChild(buildCollectorButton);
@@ -745,12 +965,12 @@ document.addEventListener('DOMContentLoaded', () => {
                             emoji: '🏭',
                             hp: 1000,
                             size: 55,
-                            cost: 150,
+                            cost: 150, // Cost for Barracks
                             totalBuildTime: 10000 // 10 seconds for Barracks
                         };
-                        console.log('Entering placement mode for Barracks.');
+                        setGameStatusMessage('Placing Barracks: Click on map to build.', 5000);
                     } else {
-                        alert('Not enough minerals for Barracks!');
+                        setGameStatusMessage(`Not enough minerals for Barracks! Need 150.`, 3000);
                     }
                 };
                 commandPanel.appendChild(buildBarracksButton);
@@ -762,9 +982,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     commandPanel.appendChild(statusText);
                 } else if (selectedObject.isPlaced) {
                     const unitProductionInfo = {
-                        'Soldier': { cost: { minerals: 75, gas: 0 }, emoji: '💂', buildTime: 7000 },
-                        'SuperSoldier': { cost: { minerals: 125, gas: 50 }, emoji: '🦸', buildTime: 10000 },
-                        'Tank': { cost: { minerals: 200, gas: 100 }, emoji: '🚜', buildTime: 15000 }
+                        'Soldier': { cost: { minerals: 75, gas: 0 }, emoji: '💂', buildTime: 7000, supplyCost: 1 },
+                        'SuperSoldier': { cost: { minerals: 125, gas: 50 }, emoji: '🦸', buildTime: 10000, supplyCost: 2 },
+                        'Tank': { cost: { minerals: 200, gas: 100 }, emoji: '🚜', buildTime: 15000, supplyCost: 3 }
                     };
 
                     // Make sure Barracks has its unitBuildTimes initialized
@@ -780,18 +1000,26 @@ document.addEventListener('DOMContentLoaded', () => {
                         const button = document.createElement('button');
                         button.textContent = `Build ${info.emoji} ${unitName} - ${info.cost.minerals}M ${info.cost.gas}G`;
                         button.onclick = () => {
-                            if (playerResources.minerals >= info.cost.minerals && playerResources.gas >= info.cost.gas) {
-                                if (selectedObject.productionQueue.length < 5) { // Max 5 items in queue
-                                    playerResources.minerals -= info.cost.minerals;
-                                    playerResources.gas -= info.cost.gas;
-                                    selectedObject.productionQueue.push(unitName);
-                                    console.log(`Queueing ${unitName}`);
-                                    updateBuildQueueDisplay(); // Update UI immediately
+                            const unitDetails = unitProductionInfo[unitName];
+                            // Check supply first
+                            if (playerResources.currentSupply + unitDetails.supplyCost <= playerResources.maxSupply) {
+                                // Then check resources
+                                if (playerResources.minerals >= unitDetails.cost.minerals && playerResources.gas >= unitDetails.cost.gas) {
+                                    if (selectedObject.productionQueue.length < 5) { // Max 5 items in queue
+                                        playerResources.minerals -= unitDetails.cost.minerals;
+                                        playerResources.gas -= unitDetails.cost.gas;
+                                        selectedObject.productionQueue.push(unitName);
+                                        setGameStatusMessage(`${unitName} queued for production.`, 3000);
+                                        updateBuildQueueDisplay();
+                                    } else {
+                                        setGameStatusMessage('Production queue is full!', 3000);
+                                    }
                                 } else {
-                                    alert('Production queue is full!');
+                                    setGameStatusMessage(`Not enough resources for ${unitName}! Need ${unitDetails.cost.minerals}M ${unitDetails.cost.gas}G.`, 3000);
                                 }
                             } else {
-                                alert(`Not enough resources for ${unitName}!`);
+                                // Not enough supply
+                                setGameStatusMessage(`Not enough supply for ${unitName}! Need ${unitDetails.supplyCost} supply. Max: ${playerResources.maxSupply}.`, 4000);
                             }
                         };
                         commandPanel.appendChild(button);
@@ -809,12 +1037,43 @@ document.addEventListener('DOMContentLoaded', () => {
     const gasNode2 = new ResourceNode(700, 100, '💨', 'gas', 1000, 35);
     gameObjects.push(mineralNode1, mineralNode2, gasNode1, gasNode2);
 
-    const commandCenter = new Building(MAP_WIDTH / 2, MAP_HEIGHT / 2, '🏠', 'CommandCenter', 1500, 60);
+    const commandCenter = new Building(MAP_WIDTH / 2, MAP_HEIGHT / 2, '🏠', 'CommandCenter', 1500, 60, false); // Player's CC
     commandCenter.resourceGenerationRate = 1; // Generates 1 mineral per second
     commandCenter.isPlaced = true; // Starts fully built
     commandCenter.isConstructing = false;
     commandCenter.unitBuildTimes = { 'Collector': 5000 }; // Specific to CommandCenter
+    commandCenter.supplyProvided = 10; // <-- Add this line
     gameObjects.push(commandCenter);
+    updateMaxSupply(); // <-- Add this call
+
+    // AI Player Resources
+    let aiPlayerResources = {
+        minerals: 500,
+        gas: 200,
+        currentSupply: 0,
+        maxSupply: 0
+    };
+
+    // Initial AI Placement
+    const aiStartX = MAP_WIDTH - 100;
+    const aiStartY = 100;
+
+    // AI CommandCenter
+    const aiCommandCenter = new Building(aiStartX, aiStartY, '🏠', 'CommandCenter', 1500, 60, true); // isAI = true
+    aiCommandCenter.isPlaced = true; 
+    aiCommandCenter.supplyProvided = 10;
+    aiCommandCenter.resourceGenerationRate = 1; 
+    gameObjects.push(aiCommandCenter);
+    aiPlayerResources.maxSupply += aiCommandCenter.supplyProvided;
+
+    // AI Starting Collectors
+    for (let i = 0; i < 3; i++) {
+        // Spawn AI collectors slightly offset from their CC and each other
+        const collector = new Collector(aiStartX + 60 + (i * 10), aiStartY + (i * 10), true); // isAI = true
+        // supplyCost is already set in Collector constructor (defaults to 1 if not specified, but explicitly set to 1 in prior step)
+        gameObjects.push(collector);
+        aiPlayerResources.currentSupply += collector.supplyCost;
+    }
     
     // Initialize and start game
     console.log("Game starting...");

@@ -78,3 +78,21 @@ body {
 #unit-queue-list li:last-child {
     border-bottom: none;
 }
+
+#game-status-messages {
+    width: 100%; /* Span across the UI container */
+    text-align: center;
+    padding: 5px;
+    background-color: #3a3a3a;
+    border-top: 1px solid #666;
+    border-bottom: 1px solid #666;
+    min-height: 20px;
+    box-sizing: border-box;
+    margin-top: 5px;
+    margin-bottom: 5px;
+    order: -1; /* Attempt to place it at the top of the flex container */
+}
+#status-message {
+    margin: 0;
+    color: #e0e0e0;
+}
