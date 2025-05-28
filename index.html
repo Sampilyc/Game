@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emoji RTS</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="game-canvas"></canvas>
+    </div>
+
+    <div id="ui-container">
+        <div id="resource-display">
+            Minerals: <span id="minerals">0</span> | Gas: <span id="gas">0</span>
+        </div>
+        <div id="selection-info">
+            <p>Selected: <span id="selected-entity">None</span></p>
+            <p>HP: <span id="entity-hp">N/A</span></p>
+        </div>
+        <div id="command-panel">
+            <!-- Command buttons will be added here by JavaScript based on selection -->
+        </div>
+        <div id="minimap-container">
+            <canvas id="minimap-canvas"></canvas>
+        </div>
+        <div id="build-queue">
+            <p>Build Queue:</p>
+            <ul id="unit-queue-list"></ul>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

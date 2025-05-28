@@ -1,0 +1,80 @@
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: #333;
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+#game-container {
+    border: 2px solid #555;
+    margin-bottom: 10px;
+}
+
+#game-canvas {
+    background-color: #000; /* Black background for the game area */
+    display: block; /* Removes extra space below canvas */
+}
+
+#ui-container {
+    display: flex;
+    flex-wrap: wrap; /* Allow wrapping for smaller screens */
+    justify-content: space-around;
+    padding: 10px;
+    background-color: #444;
+    border-radius: 5px;
+    width: 800px; /* Match canvas width or adjust as needed */
+    box-sizing: border-box;
+}
+
+#resource-display, #selection-info, #command-panel, #minimap-container, #build-queue {
+    border: 1px solid #666;
+    padding: 10px;
+    margin: 5px;
+    background-color: #505050;
+    border-radius: 3px;
+    min-width: 150px; /* Minimum width for UI panels */
+}
+
+#selection-info p, #resource-display p {
+    margin: 5px 0;
+}
+
+#minimap-canvas {
+    width: 150px; /* Example size */
+    height: 100px; /* Example size */
+    background-color: #222;
+}
+
+#command-panel button {
+    display: block;
+    margin: 5px 0;
+    padding: 8px;
+    background-color: #6a6af1;
+    color: white;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+#command-panel button:hover {
+    background-color: #5050d1;
+}
+
+#unit-queue-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+#unit-queue-list li {
+    padding: 3px;
+    border-bottom: 1px solid #666;
+}
+
+#unit-queue-list li:last-child {
+    border-bottom: none;
+}
